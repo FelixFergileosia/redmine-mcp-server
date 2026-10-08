@@ -5,7 +5,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { getDownloadAttachmentFileUrl } from "../__generated__/http-client";
-import { customFetch } from "../api/custom-fetch";
+import { downloadBinary } from "../api/custom-fetch";
 import { DownloadLocalFileResponse } from "../types/attachment";
 
 export async function downloadFileToLocalFromRedmine(
@@ -14,14 +14,10 @@ export async function downloadFileToLocalFromRedmine(
   outputDir?: string
 ): Promise<DownloadLocalFileResponse> {
   // Download the actual file using the generated URL function
-  const downloadUrl = getDownloadAttachmentFileUrl(attachmentId, filename);
-  const downloadResponse = await customFetch(downloadUrl);
-
-  if (!downloadResponse.ok) {
-    throw new Error(
-      `Failed to download file: ${downloadResponse.status} ${downloadResponse.statusText}`
-    );
-  }
+  const fileBuffer = await downloadBinary(
+    getDownloadAttachmentFileUrl(attachmentId, filename),
+    "file"
+  );
 
   // Determine output directory and file path
   const actualOutputDir = outputDir || os.tmpdir();
@@ -38,8 +34,7 @@ export async function downloadFileToLocalFromRedmine(
   const outputPath = path.join(actualOutputDir, uniqueFilename);
 
   // Write file to disk
-  const fileBuffer = await downloadResponse.arrayBuffer();
-  fs.writeFileSync(outputPath, Buffer.from(fileBuffer));
+  fs.writeFileSync(outputPath, fileBuffer);
 
   return {
     filePath: outputPath,

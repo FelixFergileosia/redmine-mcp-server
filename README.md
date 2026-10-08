@@ -46,8 +46,9 @@ The following environment variables are required (specified in MCP client config
 
 - **REDMINE_URL** (Required): Base URL of the Redmine instance
   - Example: `https://redmine.example.com`
-- **REDMINE_API_KEY** (Required): API key generated in Redmine
+- **REDMINE_API_KEY** (Required in stdio mode): API key generated in Redmine
   - Set the API key obtained in prerequisites
+  - Not used in http mode, where each request sends its own key (see [Shared HTTP Server](#shared-http-server-stateless))
 - **REDMINE_MCP_READ_ONLY** (Optional): Enable read-only mode
   - `true`: Read-only mode (disables data modification operations)
   - `false` or unset: Allow all operations (default)
@@ -58,6 +59,12 @@ The following environment variables are required (specified in MCP client config
   - Example: `^delete` (disable all tools starting with "delete")
   - If unset, no tools are denied (subject to other settings)
   - Deny pattern takes priority over allow pattern
+- **REDMINE_MCP_REQUEST_TIMEOUT_MS** (Optional): Timeout for each request to Redmine in milliseconds
+  - Default: `30000`. `0` disables the timeout
+- **REDMINE_MCP_MAX_DOWNLOAD_BYTES** (Optional): Maximum size of an attachment or thumbnail download in bytes
+  - Default: `0` (unlimited). Recommended in http mode, e.g. `10485760` (10 MB)
+- **REDMINE_MCP_TRANSPORT** (Optional): `stdio` (default) or `http`
+  - See [Shared HTTP Server](#shared-http-server-stateless) for the http-only variables
 
 ### MCP Client Configuration
 
@@ -184,6 +191,71 @@ User configuration (`settings.json`):
           "REDMINE_API_KEY": "your-api-key-here",
           "REDMINE_MCP_READ_ONLY": "true"
         }
+      }
+    }
+  }
+}
+```
+
+## Shared HTTP Server (Stateless)
+
+Set `REDMINE_MCP_TRANSPORT=http` to run one server that a whole team connects to over the network, instead of each developer running their own process.
+
+- **Stateless**: every `POST /mcp` request is handled by a fresh MCP server instance, so no session state is kept. The server can be restarted or run as multiple replicas behind a load balancer.
+- **Per-developer API key**: the server holds no Redmine API key. Each developer sends their own key with every request, so Redmine applies that developer's permissions.
+  - `X-Redmine-API-Key: <key>` or `Authorization: Bearer <key>`
+  - Requests without a key are rejected with `401`.
+- **Local file tools are disabled**: `uploadAttachmentFromLocalFile`, `downloadAttachmentToLocalFile` and `downloadThumbnailToLocalFile` would access the server's filesystem rather than the developer's, so they are not exposed in http mode. Use the Base64 variants instead.
+
+Endpoints:
+
+- `POST /mcp`: MCP Streamable HTTP endpoint
+- `GET /healthz`: health check
+
+HTTP-specific environment variables:
+
+- **REDMINE_MCP_HTTP_HOST** (Optional): Listen address. Default: `0.0.0.0`
+- **REDMINE_MCP_HTTP_PORT** (Optional): Listen port. Default: `3000`
+- **REDMINE_MCP_HTTP_ALLOWED_HOSTS** (Optional): Comma-separated `Host` header values to accept, e.g. `mcp.example.com,mcp.example.com:443`. Enables DNS rebinding protection when set
+- **REDMINE_MCP_HTTP_ALLOWED_ORIGINS** (Optional): Comma-separated `Origin` header values to accept. Enables DNS rebinding protection when set
+
+> [!IMPORTANT]
+> API keys travel in request headers. Always put the server behind HTTPS (e.g. a reverse proxy such as Caddy or nginx) when it is reachable by other machines.
+
+### Running with Docker Compose
+
+```yaml
+services:
+  redmine-mcp:
+    build: .  # built from this repository
+    restart: unless-stopped
+    environment:
+      REDMINE_URL: http://redmine:3000
+      REDMINE_MCP_TRANSPORT: http
+      REDMINE_MCP_MAX_DOWNLOAD_BYTES: "10485760"
+      REDMINE_MCP_HTTP_ALLOWED_HOSTS: mcp.example.com
+    ports:
+      - "3000:3000"
+```
+
+### Connecting Clients
+
+Claude Code:
+
+```bash
+claude mcp add --transport http redmine https://mcp.example.com/mcp --header "X-Redmine-API-Key: your-api-key-here"
+```
+
+Clients configured with JSON (e.g. Cursor, VS Code):
+
+```json
+{
+  "mcpServers": {
+    "redmine": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "X-Redmine-API-Key": "your-api-key-here"
       }
     }
   }

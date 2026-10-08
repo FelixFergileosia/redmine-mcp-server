@@ -25,12 +25,19 @@ This is a Model Context Protocol (MCP) server for Redmine that provides comprehe
   - Environment-based configuration loading
   - Read-only mode support via `REDMINE_MCP_READ_ONLY=true`
   - Tool filtering via `REDMINE_MCP_TOOLS_ALLOW_PATTERN` and `REDMINE_MCP_TOOLS_DENY_PATTERN`
-  - Requires `REDMINE_URL` and `REDMINE_API_KEY` environment variables
+  - Requires `REDMINE_URL`, plus `REDMINE_API_KEY` in stdio mode
+  - Transport selection via `REDMINE_MCP_TRANSPORT` (`stdio` or `http`)
 
 - **Main Server**: `src/server.ts`
-  - Registers all tools with read-only/write classification
+  - Collects all tools into a single registry (`toolDefinitions`) with read-only/write classification
+  - `createServer()` builds an `McpServer` from that registry; both transports use it
   - Implements conditional tool registration based on configuration (read-only mode and regex filters)
   - Extensive tool registry covering all Redmine operations
+
+- **HTTP Transport**: `src/http-server.ts`
+  - Stateless Streamable HTTP: a fresh server per `POST /mcp` request
+  - Reads the caller's Redmine API key from `X-Redmine-API-Key` or `Authorization: Bearer`
+  - `src/api/request-context.ts` keeps that key in `AsyncLocalStorage` so `customFetch` uses it
 
 ### Code Generation Workflow
 
@@ -59,20 +66,25 @@ Tools are registered with a classification system:
 - `ToolType.READ_ONLY` - Safe operations that don't modify data
 - `ToolType.WRITE` - Operations that create, update, or delete data
 
-The `registerTool` helper function automatically excludes write operations when `config.readOnlyMode` is enabled.
+The `registerTool` helper function adds each tool to the registry; `isToolEnabled` then excludes write operations when `config.readOnlyMode` is enabled, and tools marked `usesLocalFilesystem` in http mode.
 
 The same classification is exposed to clients: `registerTool` passes `annotations: { readOnlyHint: ... }` to `server.tool()`, so `tools/list` reports whether each tool modifies data.
 
 ### Environment Configuration
 The server requires these environment variables:
 - `REDMINE_URL` - Base URL of the Redmine instance
-- `REDMINE_API_KEY` - API key for authentication
+- `REDMINE_API_KEY` - API key for authentication (stdio mode only; in http mode each request sends its own key)
 - `REDMINE_MCP_READ_ONLY` - Optional, set to "true" to enable read-only mode
 - `REDMINE_MCP_TOOLS_ALLOW_PATTERN` - Optional, regex to allow only matching tools
 - `REDMINE_MCP_TOOLS_DENY_PATTERN` - Optional, regex to disable matching tools (takes priority over allow)
+- `REDMINE_MCP_REQUEST_TIMEOUT_MS` - Optional, timeout for Redmine requests (default 30000, 0 = none)
+- `REDMINE_MCP_MAX_DOWNLOAD_BYTES` - Optional, max attachment/thumbnail download size (default 0 = unlimited)
+- `REDMINE_MCP_TRANSPORT` - Optional, `stdio` (default) or `http`
+- `REDMINE_MCP_HTTP_HOST` / `REDMINE_MCP_HTTP_PORT` - Optional, http listen address (default `0.0.0.0:3000`)
+- `REDMINE_MCP_HTTP_ALLOWED_HOSTS` / `REDMINE_MCP_HTTP_ALLOWED_ORIGINS` - Optional, comma-separated allowlists for DNS rebinding protection
 
 ### Custom Fetch Integration
-The generated HTTP client uses a custom fetch implementation (`src/api/custom-fetch.ts`) which is automatically injected by the post-generation script.
+The generated HTTP client uses a custom fetch implementation (`src/api/custom-fetch.ts`) which is automatically injected by the post-generation script. Attachment and thumbnail downloads go through its shared `downloadBinary` helper, which enforces `REDMINE_MCP_MAX_DOWNLOAD_BYTES`.
 
 ## File Structure Guidelines
 

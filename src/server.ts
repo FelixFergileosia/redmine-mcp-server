@@ -12,6 +12,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import packageJson from "../package.json" assert { type: "json" };
 
 import { config } from "./config.js";
+import { startHttpServer } from "./http-server.js";
 
 // Tool classification enum
 enum ToolType {
@@ -263,62 +264,88 @@ import {
   uploadBase64ContentParams,
 } from "./schemas/attachment.js";
 
-const server = new McpServer({
-  name: "redmineAPIServer",
-  version: packageJson.version,
-});
+interface ToolDefinition {
+  name: string;
+  type: ToolType;
+  /** True for tools that read or write the filesystem of the host running this server */
+  usesLocalFilesystem: boolean;
+  register: (server: McpServer) => void;
+}
 
-// Track all tools for statistics
-const allTools = new Map<string, ToolType>();
+// Single registry of all tools, shared by every transport
+const toolDefinitions: ToolDefinition[] = [];
 
-const isToolEnabled = (toolName: string, toolType: ToolType): boolean => {
-  if (config.readOnlyMode && toolType === ToolType.WRITE) return false;
-  if (config.toolsDenyPattern && config.toolsDenyPattern.test(toolName))
+const isToolEnabled = ({
+  name,
+  type,
+  usesLocalFilesystem,
+}: ToolDefinition): boolean => {
+  if (config.readOnlyMode && type === ToolType.WRITE) return false;
+  // In http mode the server's filesystem belongs to the host, not to the
+  // developer calling the tool, so local file tools are never exposed.
+  if (config.transport === "http" && usesLocalFilesystem) return false;
+  if (config.toolsDenyPattern && config.toolsDenyPattern.test(name))
     return false;
-  if (config.toolsAllowPattern && !config.toolsAllowPattern.test(toolName))
+  if (config.toolsAllowPattern && !config.toolsAllowPattern.test(name))
     return false;
   return true;
 };
 
 /**
- * Helper function to conditionally register tools based on configuration
+ * Helper function to add a tool to the registry
  */
 const registerTool = <Args extends ZodRawShape>(
   toolName: string,
   description: string,
   toolType: ToolType,
   schemas: Args,
-  handler: ToolCallback<Args>
+  handler: ToolCallback<Args>,
+  { usesLocalFilesystem = false }: { usesLocalFilesystem?: boolean } = {}
 ) => {
-  // Track tool registration for statistics
-  allTools.set(toolName, toolType);
+  toolDefinitions.push({
+    name: toolName,
+    type: toolType,
+    usesLocalFilesystem,
+    register: (server) =>
+      // Expose the read-only classification on the wire: MCP clients use
+      // annotations.readOnlyHint to decide which tools may run without asking the
+      // user (an absent hint defaults to false, i.e. treated as a write).
+      server.tool(
+        toolName,
+        description,
+        schemas,
+        { readOnlyHint: toolType === ToolType.READ_ONLY },
+        handler
+      ),
+  });
+};
 
-  if (!isToolEnabled(toolName, toolType)) {
-    return;
-  }
-  // Expose the read-only classification on the wire: MCP clients use
-  // annotations.readOnlyHint to decide which tools may run without asking the
-  // user (an absent hint defaults to false, i.e. treated as a write).
-  server.tool(
-    toolName,
-    description,
-    schemas,
-    { readOnlyHint: toolType === ToolType.READ_ONLY },
-    handler
-  );
+/**
+ * Create an MCP server with every enabled tool registered
+ */
+const createServer = (): McpServer => {
+  const server = new McpServer({
+    name: "redmineAPIServer",
+    version: packageJson.version,
+  });
+  toolDefinitions
+    .filter(isToolEnabled)
+    .forEach((definition) => definition.register(server));
+  return server;
 };
 
 // Log server mode after all tools are registered
 const logServerMode = () => {
-  const toolEntries = Array.from(allTools.entries());
-  const enabledCount = toolEntries.filter(([name, type]) =>
-    isToolEnabled(name, type)
-  ).length;
-  const disabledCount = toolEntries.length - enabledCount;
+  const enabledCount = toolDefinitions.filter(isToolEnabled).length;
+  const disabledCount = toolDefinitions.length - enabledCount;
 
   console.error("Starting Redmine MCP Server");
+  console.error(`  - Transport: ${config.transport}`);
   if (config.readOnlyMode) {
     console.error("  - Read-only mode: write operations disabled");
+  }
+  if (config.transport === "http") {
+    console.error("  - Local file tools: disabled in http mode");
   }
   if (config.toolsAllowPattern) {
     console.error(`  - Allow pattern: ${config.toolsAllowPattern.source}`);
@@ -952,21 +979,24 @@ registerTool(
   "Upload attachment file from local file system to Redmine and get upload token",
   ToolType.WRITE,
   { pathParams: uploadLocalFileParams },
-  uploadFileHandler
+  uploadFileHandler,
+  { usesLocalFilesystem: true }
 );
 registerTool(
   "downloadAttachmentToLocalFile",
   "Download attachment file from Redmine to local file system",
   ToolType.READ_ONLY,
   { pathParams: downloadToLocalFileParams },
-  downloadFileHandler
+  downloadFileHandler,
+  { usesLocalFilesystem: true }
 );
 registerTool(
   "downloadThumbnailToLocalFile",
   "Download thumbnail from Redmine to local file system",
   ToolType.READ_ONLY,
   { pathParams: downloadThumbnailToLocalFileParams },
-  downloadThumbnailHandler
+  downloadThumbnailHandler,
+  { usesLocalFilesystem: true }
 );
 
 // Register custom attachment tools - Base64 content based
@@ -996,11 +1026,13 @@ registerTool(
 // Log server mode after all tools are registered
 logServerMode();
 
-const transport = new StdioServerTransport();
-
-server
-  .connect(transport)
-  .then(() => {
-    console.error("MCP server running on stdio");
-  })
-  .catch(console.error);
+if (config.transport === "http") {
+  startHttpServer(createServer);
+} else {
+  createServer()
+    .connect(new StdioServerTransport())
+    .then(() => {
+      console.error("MCP server running on stdio");
+    })
+    .catch(console.error);
+}

@@ -1,8 +1,9 @@
 import { config } from "../config.js";
+import { getRedmineApiKey } from "./request-context.js";
 
 export const customFetch = async (url: string, options?: RequestInit) => {
   const headers: HeadersInit = {
-    "X-Redmine-API-Key": config.redmineApiKey,
+    "X-Redmine-API-Key": getRedmineApiKey(),
     ...options?.headers,
   };
 
@@ -16,6 +17,11 @@ export const customFetch = async (url: string, options?: RequestInit) => {
   const res = await fetch(fullUrl, {
     ...options,
     headers,
+    signal:
+      options?.signal ??
+      (config.requestTimeoutMs > 0
+        ? AbortSignal.timeout(config.requestTimeoutMs)
+        : undefined),
   });
 
   console.error(`Response status: ${res.status}`);
@@ -34,4 +40,41 @@ export const customFetch = async (url: string, options?: RequestInit) => {
   }
 
   return res;
+};
+
+/**
+ * Download binary content (attachment or thumbnail) from Redmine,
+ * enforcing the configured maximum download size.
+ */
+export const downloadBinary = async (
+  url: string,
+  label: string
+): Promise<Buffer> => {
+  const res = await customFetch(url);
+
+  if (!res.ok) {
+    throw new Error(
+      `Failed to download ${label}: ${res.status} ${res.statusText}`
+    );
+  }
+
+  const exceedsLimit = (size: number) =>
+    config.maxDownloadBytes > 0 && size > config.maxDownloadBytes;
+  const limitError = (size: number) =>
+    new Error(
+      `Failed to download ${label}: size ${size} bytes exceeds limit of ${config.maxDownloadBytes} bytes`
+    );
+
+  // Reject early when the server announces the size, then verify the actual body
+  const announcedSize = Number(res.headers.get("content-length") ?? 0);
+  if (exceedsLimit(announcedSize)) {
+    await res.body?.cancel();
+    throw limitError(announcedSize);
+  }
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (exceedsLimit(buffer.length)) {
+    throw limitError(buffer.length);
+  }
+
+  return buffer;
 };

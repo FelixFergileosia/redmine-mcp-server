@@ -49,4 +49,7 @@ COPY --from=build /app/dist ./dist
 ENV NODE_ENV=production
 USER node
 
+# Used only when REDMINE_MCP_TRANSPORT=http
+EXPOSE 3000
+
 ENTRYPOINT ["node", "dist/server.mjs"]
