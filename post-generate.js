@@ -41,5 +41,16 @@ function removeGeneratedServer() {
   }
 }
 
+function removeUnusedBinaryBodyImport() {
+  // Orval 7.10's MCP generator imports a binary body alias that its schema
+  // generator never emits; the upload handler already uses Blob directly.
+  const path = 'src/__generated__/handlers.ts';
+  const content = fs.readFileSync(path, 'utf8');
+  if ((content.match(/\bUploadAttachmentFileBody\b/g) ?? []).length === 1) {
+    fs.writeFileSync(path, content.replace(/^\s*UploadAttachmentFileBody,\r?\n/m, ''));
+  }
+}
+
 addCustomFetchImport();
+removeUnusedBinaryBodyImport();
 removeGeneratedServer();

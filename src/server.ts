@@ -13,6 +13,8 @@ import packageJson from "../package.json" assert { type: "json" };
 
 import { config } from "./config.js";
 import { startHttpServer } from "./http-server.js";
+import { getGanttDataHandler, getGanttDataDetailHandler } from "./gantt/handlers.js";
+import { ganttDataSchema, ganttDetailSchema } from "./schemas/gantt.js";
 
 // Tool classification enum
 enum ToolType {
@@ -360,6 +362,20 @@ const logServerMode = () => {
 };
 
 // Register all generated tools
+registerTool(
+  "getGanttData",
+  "Scan a user's schedule across projects for working-day gaps. Includes closed issues, paginates automatically, and returns compact daily coverage plus an authenticated 10-minute scan_id. Missing dates and incomplete scans are uncertain, not confirmed gaps.",
+  ToolType.READ_ONLY,
+  ganttDataSchema.shape,
+  getGanttDataHandler
+);
+registerTool(
+  "getGanttDataDetail",
+  "Explain dates from getGanttData using its cached scan_id. Returns covering, nearby and unscheduled issues with pagination. Descriptions, relations and journals are fetched only when requested. Access is rechecked; snapshots expire after 10 minutes or a server restart.",
+  ToolType.READ_ONLY,
+  ganttDetailSchema.shape,
+  getGanttDataDetailHandler
+);
 registerTool(
   "getIssues",
   "List issues",

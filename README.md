@@ -29,6 +29,13 @@ https://github.com/user-attachments/assets/8f551082-6982-4513-8fe7-b0f111be982d
 
 ## Prerequisites
 
+### Cross-project Gantt coverage
+
+`getGanttData` scans a user's issues across projects for working-day schedule
+gaps. `getGanttDataDetail` explains selected dates from the cached scan, with
+descriptions, relations and journals fetched only on request. Both tools are
+read-only. See [inputs, coverage rules and examples](docs/gantt.md).
+
 ### Getting Redmine API Key
 
 1. Log in to Redmine with administrator privileges
