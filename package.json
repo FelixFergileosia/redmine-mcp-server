@@ -13,7 +13,7 @@
   "scripts": {
     "gen": "node scripts/clean-generated.mjs && orval && node post-generate.js",
     "build": "pnpm gen && tsdown",
-    "test": "tsdown --config tsdown.test.config.ts && node --test .test-build/gantt.test.mjs tests/mcp.test.mjs",
+    "test": "tsdown --config tsdown.test.config.ts && node --test .test-build/gantt.test.mjs .test-build/gantt-tools.test.mjs tests/mcp.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "repository": {

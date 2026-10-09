@@ -1,7 +1,12 @@
 import { config } from "../config.js";
+import { readLimitedBody } from "./binary.js";
 import { getRedmineApiKey } from "./request-context.js";
 
-export const customFetch = async (url: string, options?: RequestInit) => {
+/**
+ * Authenticated request to Redmine that returns the raw response,
+ * whatever its status or content type.
+ */
+export const redmineFetch = async (url: string, options?: RequestInit) => {
   const headers: HeadersInit = {
     "X-Redmine-API-Key": getRedmineApiKey(),
     ...options?.headers,
@@ -25,6 +30,11 @@ export const customFetch = async (url: string, options?: RequestInit) => {
   });
 
   console.error(`Response status: ${res.status}`);
+  return res;
+};
+
+export const customFetch = async (url: string, options?: RequestInit) => {
+  const res = await redmineFetch(url, options);
 
   // Check if response is HTML instead of JSON
   if (!res.ok) {
@@ -33,7 +43,7 @@ export const customFetch = async (url: string, options?: RequestInit) => {
       const text = await res.text();
       throw new Error(
         `Expected JSON but received HTML (HTTP ${res.status}). ` +
-        `URL: ${fullUrl}. ` +
+        `URL: ${res.url || url}. ` +
         `Response body: ${text.substring(0, 200)}...`
       );
     }
@@ -58,23 +68,5 @@ export const downloadBinary = async (
     );
   }
 
-  const exceedsLimit = (size: number) =>
-    config.maxDownloadBytes > 0 && size > config.maxDownloadBytes;
-  const limitError = (size: number) =>
-    new Error(
-      `Failed to download ${label}: size ${size} bytes exceeds limit of ${config.maxDownloadBytes} bytes`
-    );
-
-  // Reject early when the server announces the size, then verify the actual body
-  const announcedSize = Number(res.headers.get("content-length") ?? 0);
-  if (exceedsLimit(announcedSize)) {
-    await res.body?.cancel();
-    throw limitError(announcedSize);
-  }
-  const buffer = Buffer.from(await res.arrayBuffer());
-  if (exceedsLimit(buffer.length)) {
-    throw limitError(buffer.length);
-  }
-
-  return buffer;
+  return readLimitedBody(res, config.maxDownloadBytes, label);
 };

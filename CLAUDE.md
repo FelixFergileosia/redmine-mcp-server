@@ -34,6 +34,14 @@ This is a Model Context Protocol (MCP) server for Redmine that provides comprehe
   - Implements conditional tool registration based on configuration (read-only mode and regex filters)
   - Extensive tool registry covering all Redmine operations
 
+- **Gantt and scheduling tools**: `src/gantt/` (documented in `docs/gantt.md`)
+  - `redmine-client.ts` - shared Redmine access: sanitized reads, issue pagination, JSON writes, binary/export probes
+  - `service.ts` - `getGanttData` / `getGanttDataDetail` coverage scans
+  - `schedule.ts` - `applySchedule` (dry run, writes, read-back verification)
+  - `export.ts` - Gantt adapters (`redmine_core`), `getGanttPluginCapabilities`, `exportGantt`
+  - Schemas live in `src/schemas/gantt.ts`; handlers in `handlers.ts`
+  - New Gantt plugin support is added as an adapter in `export.ts`
+
 - **HTTP Transport**: `src/http-server.ts`
   - Stateless Streamable HTTP: a fresh server per `POST /mcp` request
   - Reads the caller's Redmine API key from `X-Redmine-API-Key` or `Authorization: Bearer`
@@ -94,6 +102,8 @@ The generated HTTP client uses a custom fetch implementation (`src/api/custom-fe
 - Configuration changes go in `src/config.ts`
 
 ## Testing the Server
+
+`pnpm test` runs the unit tests in `tests/` (in-memory Redmine fixtures) and the MCP transport tests.
 
 The server runs as an MCP server over stdio. Test it by:
 1. Building the project: `pnpm build`

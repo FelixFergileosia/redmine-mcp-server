@@ -111,6 +111,108 @@ not proof that work was forgotten, and interval coverage does not prove that
 hours were worked. Both tools leave issues, dates, relations and time entries
 unchanged.
 
+## Apply a schedule
+
+`applySchedule` sets start/due dates and adds dependencies on several issues in
+one call. `dry_run` defaults to `true`, so the first call only reports the plan:
+
+```json
+{
+  "changes": [
+    { "issue_id": 101, "due_date": "2026-09-08" },
+    { "issue_id": 102, "start_date": "2026-09-09", "due_date": "2026-09-14" },
+    { "issue_id": 103, "start_date": null }
+  ],
+  "dependencies": [
+    { "issue_id": 101, "issue_to_id": 102, "relation_type": "precedes", "delay": 0 }
+  ],
+  "notes": "Rescheduled after sprint planning",
+  "dry_run": true
+}
+```
+
+Omit a date field to keep it, or pass `null` to clear it. Dependencies accept
+`precedes`, `follows`, `blocks` and `blocked`; `delay` is only valid for
+precedes/follows. At most 50 changes, 50 dependencies and 100 distinct issues
+per call. `notes` becomes a journal entry on each issue whose dates change.
+
+Each item gets a status: `planned`, `unchanged`, `invalid` (with a code such as
+`REVERSED_DATES` or `ISSUE_NOT_VISIBLE`) or `already_exists` (the relation
+exists in either direction). The plan also returns warnings:
+
+| Warning | Meaning |
+|---|---|
+| `FOLLOWER_STARTS_BEFORE_PREDECESSOR_ENDS` | A following issue would start on or before its predecessor's due date plus delay. Redmine will reject that date, or move the follower when the relation is created. Uses calendar days; Redmine also skips its non-working days. |
+| `PARENT_DATES_MAY_BE_DERIVED` | The issue has subtasks. With Redmine's default settings its dates come from the subtasks and the write is ignored. |
+
+Warnings cover the requested issues plus the direct predecessors and followers
+of changed issues.
+
+With `dry_run: false`, dates are written first and dependencies second, one
+request at a time. Writes are not atomic: a failure does not roll back earlier
+writes. Each item becomes `applied` or `failed`; failures carry `HTTP_<status>`
+and, for HTTP 422, Redmine's own validation messages. Everything is then read
+back:
+
+- `verified` is `false` when Redmine stored something other than requested (for
+  example a parent whose dates are derived). `stored` shows the actual dates.
+- `rescheduled_by_redmine` lists loaded issues whose dates Redmine changed on its
+  own, such as followers moved by a new or tightened `precedes` relation. Issues
+  further down a chain are not read back.
+
+The tool is a write tool: it is hidden in read-only mode.
+
+## Gantt implementation and export
+
+`getGanttPluginCapabilities` reports which Gantt implementation this server can
+recognize and what actually works with the caller's API key:
+
+```json
+{ "project_id": 1 }
+```
+
+Redmine's REST API does not list installed plugins or their versions, so an
+implementation is recognized only through an adapter in `src/gantt/export.ts`.
+The built-in adapter is `redmine_core` (Redmine's own Gantt). Plugins without an
+adapter are not identified, and `version` is `null` because Redmine does not
+expose it. Each export is probed with a header-only request:
+
+| Status | Meaning |
+|---|---|
+| `available` | Redmine returned the file. |
+| `requires_browser_session` | Redmine redirected to the login page or answered 401/403. |
+| `not_supported` | Redmine answered 406, e.g. PNG without ImageMagick on the Redmine server. |
+| `unavailable` | Any other answer; see `code`. |
+
+Redmine accepts API keys for JSON/XML only. Its PDF/PNG Gantt routes therefore
+run as the anonymous user (`rendered_as: "anonymous"`): on instances that
+require login they are `requires_browser_session`, and where they are
+`available` they show only publicly visible issues. Redmine core has no
+baselines, and its working calendar is an admin setting the API does not
+expose, so both are reported as unsupported.
+
+`exportGantt` keeps the two kinds of output apart through `source`:
+
+| `format` | `source` | Produced by |
+|---|---|---|
+| `pdf`, `png` | `redmine_plugin` | Redmine's own export, returned as `content_base64`. Covers whole months from `from`, up to 24 months. |
+| `csv`, `mermaid` | `mcp_generated` | This server, from issue start/due dates. Not the plugin-rendered chart. |
+
+```json
+{ "format": "mermaid", "from": "2026-09-01", "to": "2026-09-30", "project_id": 1 }
+```
+
+MCP-generated charts include issues whose start and due dates overlap the range
+(closed issues too unless `include_closed` is false), or exactly the issues in
+`issue_ids`. They read up to `max_pages` pages and 500 issues; `complete` is
+false when that limit or a read error cut the list short. CSV includes duration,
+progress, parent and dependencies, and prefixes cells that start with `=`, `+`,
+`-` or `@` so spreadsheets do not evaluate them. Mermaid draws one bar per
+scheduled issue grouped by project; closed issues are `done`, issues with
+progress are `active`, and dependencies are listed as comments. Plugin-specific
+calculations (working-day calendars, baselines, derived dates) are not
+reproduced. `REDMINE_MCP_MAX_DOWNLOAD_BYTES` limits Redmine's PDF/PNG exports.
+
 ## Development verification
 
 ```sh
@@ -120,7 +222,9 @@ pnpm typecheck
 pnpm test
 ```
 
-Tests use local fixtures: cross-project coverage, calendars, timezone conversion,
+Tests use local fixtures: schedule plans and writes against an in-memory
+Redmine that rejects invalid dates, derives parent dates and reschedules
+followers; export probing and CSV/Mermaid output; cross-project coverage, calendars, timezone conversion,
 incomplete schedules, pagination, partial scans, ownership, expired/evicted
 snapshots, permission changes, opt-in details, concurrent HTTP callers and stdio
 registration. The HTTP tests bind to loopback and do not access live Redmine.

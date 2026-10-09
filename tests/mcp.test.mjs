@@ -117,3 +117,50 @@ test("Gantt tools work over stateless HTTP and stdio, respect filtering, and iso
   assert.equal(stdioResult.isError, undefined);
   assert.equal(JSON.parse(stdioResult.content[0].text).user_id, 12);
 });
+
+test("schedule and export tools are registered with the right hints and honor read-only mode", { timeout: 30_000 }, async t => {
+  const writes = [];
+  const backend = http.createServer((req, res) => {
+    const url = new URL(req.url, "http://localhost");
+    if (req.method !== "GET") writes.push(url.pathname);
+    res.setHeader("Content-Type", "application/json");
+    if (url.pathname === "/issues.json") {
+      res.end(JSON.stringify({ issues: [{
+        id: 1, subject: "Task", project: { id: 1, name: "P" }, author: { id: 1 }, status: { id: 1, name: "New" },
+        start_date: "2026-09-01", due_date: "2026-09-02",
+      }], total_count: 1, offset: 0 }));
+    } else if (url.pathname === "/issues/1.json") {
+      res.end(JSON.stringify({ issue: { id: 1, children: [] } }));
+    } else {
+      res.statusCode = 404; res.end("{}");
+    }
+  });
+  const backendPort = await listen(backend);
+  t.after(() => close(backend));
+  const connect = async extraEnv => {
+    const client = new Client({ name: "schedule-tests", version: "1" });
+    await client.connect(new StdioClientTransport({
+      command: process.execPath, args: ["dist/server.mjs"], stderr: "pipe",
+      env: {
+        ...process.env, REDMINE_URL: `http://127.0.0.1:${backendPort}`, REDMINE_API_KEY: "alice-test-key",
+        REDMINE_MCP_TRANSPORT: "stdio", REDMINE_MCP_TOOLS_ALLOW_PATTERN: "^(applySchedule|getGanttPluginCapabilities|exportGantt)$",
+        REDMINE_MCP_TOOLS_DENY_PATTERN: "", REDMINE_MCP_READ_ONLY: "false", ...extraEnv,
+      },
+    }));
+    t.after(() => client.close());
+    return client;
+  };
+  const client = await connect({});
+  const tools = Object.fromEntries((await client.listTools()).tools.map(tool => [tool.name, tool.annotations.readOnlyHint]));
+  assert.deepEqual(tools, { applySchedule: false, getGanttPluginCapabilities: true, exportGantt: true });
+  const dryRun = await client.callTool({ name: "applySchedule", arguments: { changes: [{ issue_id: 1, due_date: "2026-09-03" }] } });
+  const plan = JSON.parse(dryRun.content[0].text);
+  assert.equal(plan.dry_run, true);
+  assert.equal(plan.changes[0].status, "planned");
+  assert.deepEqual(writes, []);
+  const csv = await client.callTool({ name: "exportGantt", arguments: { format: "csv", from: "2026-09-01", to: "2026-09-30" } });
+  assert.equal(JSON.parse(csv.content[0].text).source, "mcp_generated");
+
+  const readOnly = await connect({ REDMINE_MCP_READ_ONLY: "true" });
+  assert.deepEqual((await readOnly.listTools()).tools.map(tool => tool.name).sort(), ["exportGantt", "getGanttPluginCapabilities"]);
+});
